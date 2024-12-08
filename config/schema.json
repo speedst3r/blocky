@@ -1,0 +1,782 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$defs": {
+        "initStrategy": {
+            "type": "string",
+            "enum": ["blocking", "failOnError", "fast"],
+            "default": "blocking",
+            "title": "Init strategy",
+            "description": "blocking: Initialization happens before DNS resolution starts. Any errors are logged, but Blocky continues running if possible.\nfailOnError: Like blocking but Blocky will exit with an error if initialization fails.\nfast: Blocky starts serving DNS immediately and initialization happens in the background. The feature requiring initialization will enable later on (if it succeeds)."
+                
+        },
+        "upstreamGroup": {
+            "additionalProperties": false,
+            "title": "Name of client(s) to map to upstream resolvers",
+            "type": "array",
+            "items": {
+                "type": "string",
+                "title": "Resolver defined in following format: [net:]host:[port][/path][#commonName]\n\nnet: tcp+udp, tcp-tls or https (default tcp+udp)\nhost: IP or hostname\nport: int (1-65535) (default 53 for udp/tcp, 853 for tcp-tls and 443 for https)\ncommonName: overrides expected certificate common name"
+            },
+            "minItems": 1
+        },
+        "rewriteConfig": {
+            "title": "hostnames to rewrite",
+            "type": "object"
+        },
+        "v4orv6AddressConfig": {
+            "oneOf": [
+                {
+                    "type": "string",
+                    "format": "ipv4"
+                },
+                {
+                    "type": "string",
+                    "format": "ipv6"
+                }
+            ]
+        },
+        "clientNameMappingConfig": {
+            "title": "Client name",
+            "type": "array",
+            "items": {
+                "$ref": "#/$defs/v4orv6AddressConfig"
+            },
+            "minItems": 1
+        },
+        "blockingListConfig": {
+            "title": "Allow/deny lists",
+            "description": "Lists are defined in groups. This allows using different sets of lists for different clients",
+            "type": "array",
+            "items": {
+                "title": "The supported list formats are:\n1. the well-known Hosts format\n2. one domain per line (plain domain list)\n3. one wildcard per line\n4. one regex per line",
+                "type": "string"
+            },
+            "minItems": 1
+        },
+        "clientGroupsConfig": {
+            "title": "Client Group",
+            "description": "You can use the client name, client's IP address, client's full-qualified domain name or a client subnet as CIDR notation.\n\nIf full-qualified domain name is used (for example \"myclient.ddns.org\"), blocky will try to resolve the IP address (A and AAAA records) of this domain. If client's IP address matches with the result, the defined group will be used.",
+            "type": "array",
+            "items": {
+                "title": "Name of an allow/deny list as defined in allowlists/denylists ",
+                "type": "string"
+            },
+            "minItems": 1
+        },
+        "loadingDownloadsConfig": {
+            "title": "Downloads",
+            "description": "Configures how HTTP(S) sources are downloaded.",
+            "type": "object",
+            "properties": {
+                "timeout": {
+                    "title": "Download attempt timeout",
+                    "type": "string",
+                    "format": "duration",
+                    "default": "5s"
+                },
+                "attempts": {
+                    "title": "How many download attempts should be performed",
+                    "type": "integer",
+                    "default": 3
+                },
+                "cooldown": {
+                    "title": "Time between the download attempts",
+                    "type": "string",
+                    "format": "duration",
+                    "default": "500ms"
+                }
+            },
+            "additionalProperties": false,
+            "minProperties": 1
+        },
+        "loadingConfig": {
+            "title": "Sources loading",
+            "description": "This sections covers loading configuration that applies to both the blocking and hosts file resolvers. These settings apply only to the resolver under which they are nested.",
+            "type": "object",
+            "properties": {
+                "refreshPeriod": {
+                    "title": "Refresh period",
+                    "description": "To keep source contents up-to-date, blocky can periodically refresh and reparse them. Default period is 4 hours. You can configure this by setting the refreshPeriod parameter to a value in duration format.\nA value of zero or less will disable this feature.",
+                    "type": "string",
+                    "format": "duration",
+                    "default": "4h"
+                },
+                "downloads": {
+                    "$ref": "#/$defs/loadingDownloadsConfig"
+                },
+                "strategy": {
+                    "$ref": "#/$defs/initStrategy"
+                },
+                "maxErrorsPerSource": {
+                    "title": "Maximum errors per source",
+                    "description": "Number of errors allowed when parsing a source before it is considered invalid and parsing stops.\nA value of -1 disables the limit.",
+                    "type": "integer",
+                    "minimum": -1
+                },
+                "concurrency": {
+                    "title": "Concurrency",
+                    "description": "Blocky downloads and processes sources concurrently. This allows limiting how many can be processed in the same time.\nLarger values can reduce the overall list refresh time at the cost of using more RAM. Please consider reducing this value on systems with limited memory.\nDefault value is 4.",
+                    "type": "integer",
+                    "default": 4,
+                    "minimum": 1
+                }
+            },
+            "additionalProperties": false,
+            "minProperties": 1
+        },
+        "maxItemsConfig": {
+            "type": "integer",
+            "default": 0,
+            "minimum": 0
+        }
+    },
+    "properties": {
+        "certFile": {
+            "title": "TLS certificate file",
+            "description": "Path to cert and key file for SSL encryption (DoH and DoT); if empty, self-signed certificate is generated",
+            "type": "string"
+        },
+        "keyFile": {
+            "title": "TLS key file",
+            "description": "Path to cert and key file for SSL encryption (DoH and DoT); if empty, self-signed certificate is generated",
+            "type": "string"
+        },
+        "minTlsServeVersion": {
+            "title": "Minimum server TLS version",
+            "description": "Minimum TLS version that the DoT and DoH server use to serve those encrypted DNS requests",
+            "type": "string",
+            "default": "1.2",
+            "enum": ["1.0", "1.1", "1.2"]
+        },
+        "connectIPVersion": {
+            "title": "IP version",
+            "description": "IP version to use for outgoing connections (dual, v4, v6)",
+            "type": "string",
+            "default": "dual",
+            "enum": ["dual","IPv4", "IPv6"]
+        },
+        "ports": {
+            "type": "object",
+            "properties": {
+                "dns": {
+                    "title": "DNS port",
+                    "description": "Port(s) and optional bind ip address(es) to serve DNS endpoint (TCP and UDP). If you wish to specify a specific IP, you can do so such as `192.168.0.1:53`. Example: 53, :53, 127.0.0.1:53,[::1]:53",
+                    "type": "integer",
+                    "default": 53
+                },
+                "http": {
+                    "title": "HTTP port",
+                    "description": "Port(s) and optional bind ip address(es) to serve HTTP used for prometheus metrics, pprof, REST API, DoH... If you wish to specify a specific IP, you can do so such as `192.168.0.1:53`. Example: 53, :53, 127.0.0.1:53,[::1]:53",
+                    "type": "integer"
+                },
+                "https": {
+                    "title": "HTTPS port",
+                    "description": "Port(s) and optional bind ip address(es) to serve HTTPS used for prometheus metrics, pprof, REST API, DoH... If you wish to specify a specific IP, you can do so such as `192.168.0.1:53`. Example: 53, :53, 127.0.0.1:53,[::1]:53",
+                    "type": "integer"
+                },
+                "tls": {
+                    "title": "TLS port",
+                    "description": "Port(s) and optional bind ip address(es) to serve DoT DNS endpoint (DNS-over-TLS). If you wish to specify a specific IP, you can do so such as `192.168.0.1:53`. Example: 53, :53, 127.0.0.1:53,[::1]:53",
+                    "type": "integer"
+                }
+            },
+            "additionalProperties": false,
+            "minProperties": 1
+        },
+        "log": {
+            "type": "object",
+            "properties": {
+                "format": {
+                    "title": "Log format (text or json)",
+                    "type": "string",
+                    "default": "text",
+                    "enum": ["json", "text"]
+                },
+                "level": {
+                    "title": "Log level",
+                    "type": "string",
+                    "default": "info",
+                    "enum": ["trace", "debug", "info", "warn", "error"]
+                },
+                "privacy": {
+                    "title": "Obfuscate log output",
+                    "description": "(replace all alphanumeric characters with *) for user sensitive data like request domains or responses to increase privacy.",
+                    "type": "boolean",
+                    "default": true
+                },
+                "timestamp": {
+                    "title": "Log timestamps (true or false)",
+                    "type": "boolean",
+                    "default": true
+                }
+            },
+            "additionalProperties": false,
+            "minProperties": 1
+        },
+        "init": {
+            "type": "object",
+            "title": "Global configuration for feature init/loading strategy.",
+            "properties": {
+                "strategy": {
+                    "oneOf": [
+                        {"$ref": "#/$defs/initStrategy"}
+                    ]
+                }
+            },
+            "additionalProperties": false,
+            "required": [
+                "strategy"
+            ]
+        },
+        "upstreams": {
+            "type": "object",
+            "properties": {
+                "groups": {
+                    "title": "Upstream DNS servers to use per client group",
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/$defs/upstreamGroup"
+                    }
+                },
+                "init": {
+                    "title": "Init strategy for testing resolvers.",
+                    "description": "Overrides global init strategy",
+                    "type": "object",
+                    "properties": {
+                        "strategy": {
+                            "oneOf": [
+                                {"$ref": "#/$defs/initStrategy"}
+                            ]
+                        }
+                    },
+                    "required": [
+                        "strategy"
+                    ]
+                },
+                "strategy": {
+                    "title": "Upstream server usage strategy",
+                    "type": "string",
+                    "default": "parallel_best",
+                    "enum": ["parallel_best", "random", "strict"]
+                },
+                "timeout": {
+                    "title": "Upstream connection timeout.",
+                    "type": "string",
+                    "format": "duration",
+                    "default": "2s"
+                },
+                "userAgent": {
+                    "title": "HTTP User Agent when connecting to upstreams.",
+                    "type": "string"
+                }
+            },
+            "additionalProperties": false,
+            "required": [
+                "groups"
+            ]
+        },
+        "bootstrapDns": {
+            "title": "Bootstrap DNS servers",
+            "description": "These DNS servers are used to resolve upstream DoH and DoT servers that are specified as host names, and list domains. It is useful if no system DNS resolver is configured, and/or to encrypt the bootstrap queries.",
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "upstream": {
+                        "title": "URI of upstream DNS server",
+                        "type": "string"
+                    },
+                    "ips": {
+                        "type": "array",
+                        "items": {
+                            "title": "IP address(es) of upstream",
+                            "$ref": "#/$defs/v4orv6AddressConfig"
+                        }
+                    }
+                }
+            },
+            "minItems": 1
+        },
+        "filtering": {
+            "title": "DNS query filtering",
+            "description": "Under certain circumstances, it may be useful to filter some types of DNS queries.",
+            "type": "object",
+            "properties": {
+                "queryTypes": {
+                    "title": "Filtered query types",
+                    "description": "You can define one or more DNS query types, all queries with these types will be dropped (empty answer will be returned).",
+                    "type": "array",
+                    "items": {
+                        "title": "DNS query type to filter",
+                        "type": "string"
+                    },
+                    "minItems": 1
+                }
+            },
+            "additionalProperties": false,
+            "required": [
+                "queryTypes"
+            ]
+        },
+        "fqdnOnly": {
+            "title": "Respond to FQDN requests only",
+            "description": "In domain environments, it may be useful to only response to FQDN requests. If this option is enabled blocky respond immediately with NXDOMAIN if the request is not a valid FQDN. The request is therefore not further processed by other options like custom or conditional. Please be aware that by enabling it your hostname resolution will break unless every hostname is part of a domain.",
+            "type": "object",
+            "properties": {
+                "enable": {
+                    "type": "boolean",
+                    "default": false
+                }
+            },
+            "additionalProperties": false,
+            "required": [
+                "enable"
+            ]
+        },
+        "customDNS": {
+            "title": "Custom DNS responses",
+            "description": "You can define your own domain name to IP mappings. For example, you can use a user-friendly name for a network printer or define a domain name for your local device on order to use the HTTPS certificate.",
+            "type": "object",
+            "properties": {
+                "customTTL": {
+                    "title": "duration used for simple mappings",
+                    "description": "(no unit is minutes)",
+                    "type": "string",
+                    "default": "1h",
+                    "format": "duration"
+                },
+                "rewrite": {
+                    "allOf": [
+                        {
+                            "$ref": "#/$defs/rewriteConfig"
+                        }
+                    ]
+                },
+                "mapping": {
+                    "title": "names to map to addresses",
+                    "type": "object"
+                },
+                "zone": {
+                    "title": "DNS zone file as a string",
+                    "type": "string"
+                },
+                "filterUnmappedTypes": {
+                    "type": "boolean",
+                    "default": true
+                }
+            },
+            "additionalProperties": false,
+            "minProperties": 1
+        },
+        "conditional": {
+            "title": "Conditional DNS forwarders",
+            "description": "You can define, which DNS resolver(s) should be used for queries for the particular domain (with all subdomains)",
+            "properties": {
+                "fallbackUpstream": {
+                    "title": "Fallback to upstream DNS",
+                    "description": "If false (default), return empty result if after rewrite, the mapped resolver returned an empty answer. If true, the original query will be sent to the upstream resolver.",
+                    "type": "boolean",
+                    "default": false
+                },
+                "rewrite": {
+                    "allOf": [
+                        {
+                            "$ref": "#/$defs/rewriteConfig"
+                        }
+                    ]
+                },
+                "mapping": {
+                    "title": "Names to forward to DNS servers",
+                    "description": "(separated by commas)\n\nE.g. fritz.box: 192.168.178.1",
+                    "type": "object"
+                }
+            },
+            "additionalProperties": false,
+            "minProperties": 1
+        },
+        "clientLookup": {
+            "title": "Client reverse DNS lookup",
+            "description": "Blocky can try to resolve a user-friendly client name from the IP address or server URL (DoT and DoH). This is useful for defining of blocking groups, since IP address can change dynamically.",
+            "type": "object",
+            "properties": {
+                "upstream": {
+                    "title": "Upstream server for reverse DNS lookup",
+                    "$ref": "#/$defs/v4orv6AddressConfig"                    
+                },
+                "singleNameOrder": {
+                    "title": "Single name order",
+                    "description": "Some routers return multiple names for the client (host name and user defined name). With this parameter you can specify, which of retrieved names should be used.",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    },
+                    "minItems": 1
+                },
+                "clients": {
+                    "title": "Specific client names can be mapped to reverse DNS entries",
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/$defs/clientNameMappingConfig"
+                    }
+                }
+            },
+            "additionalProperties": false,
+            "minProperties": 1
+        },
+        "blocking": {
+            "title": "Blocking and allowlisting",
+            "description": "Blocky can use lists of domains and IPs to block (e.g. advertisement, malware, trackers, adult sites). You can group several list sources together and define the blocking behavior per client.",
+            "type": "object",
+            "properties": {
+                "denylists": {
+                    "title": "Denylist groups",
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/$defs/blockingListConfig"
+                    }
+                },
+                "allowlists": {
+                    "title": "Allowlist groups",
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/$defs/blockingListConfig"
+                    }
+                },
+                "clientGroupsBlock": {
+                    "title": "Client Groups",
+                    "description": "In this configuration section, you can define, which blocking group(s) should be used for which client in your network.\n\nClients without an explicit group assignment will use the default group.",
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/$defs/clientGroupsConfig"
+                    }
+                },
+                "blockType": {
+                    "title": "Blocking response type",
+                    "description": "Configure which response should be sent to the client, if a requested query is blocked (only for A and AAAA queries, NXDOMAIN for other types)\n\nzeroIP: Server returns 0.0.0.0 (or :: for IPv6) as result for A and AAAA queries\nnxDomain: return NXDOMAIN as return code\ncustom IPs: comma separated list of destination IP addresses. Should contain IPv4 and IPv6 to cover all query types. Useful with running web server on this address to display the \"blocked\" page.",
+                    "type": "string",
+                    "default": "zeroIP"
+                },
+                "blockTTL": {
+                    "title": "Blocked domain TTL",
+                    "description": "TTL for answers to blocked domains can be set to customize the time (in duration format) clients ask for those domains again. Default Block TTL is 6hours. This setting only makes sense when blockType is set to nxDomain or zeroIP, and will affect how much time it could take for a client to be able to see the real IP address for a domain after receiving the custom value.",
+                    "type": "string",
+                    "format": "duration",
+                    "default": "6h"
+                },
+                "loading": {
+                    "$ref": "#/$defs/loadingConfig"
+                }
+            },
+            "additionalProperties": false,
+            "minProperties": 1
+        },
+        "caching": {
+            "title": "",
+            "type": "object",
+            "properties": {
+                "minTime": {
+                    "title": "How long a response must be cached (min value).",
+                    "description": "If <=0, use response's TTL, if >0 use this value, if TTL is smaller",
+                    "type": "string",
+                    "format": "duration",
+                    "default": "0"
+                },
+                "maxTime": {
+                    "title": "How long a response must be cached (max value).",
+                    "description": "If <0, do not cache responses. If 0, use TTL. If > 0, use this value, if TTL is greater",
+                    "type": "string",
+                    "format": "duration",
+                    "default": "0"
+                },
+                "maxItemsCount": {
+                    "title": "Max number of cache entries (responses) to be kept in cache (soft limit).",
+                    "description": "Default (0): unlimited. Useful on systems with limited amount of RAM.",
+                    "$ref": "#/$defs/maxItemsConfig"
+                },
+                "prefetching": {
+                    "title": "Prefetch DNS results",
+                    "description": "if true, blocky will preload DNS results for often used queries (default: names queried more than 5 times in a 2 hour time window). Results in cache will be loaded again on their expire (TTL). This improves the response time for often used queries, but significantly increases external traffic. It is recommended to increase \"minTime\" to reduce the number of prefetch queries to external resolvers.",
+                    "type": "boolean",
+                    "default": false
+                },
+                "prefetchExpires": {
+                    "title": "Prefetch track time window",
+                    "type": "string",
+                    "format": "duration",
+                    "default": "2h"
+                },
+                "prefetchThreshold": {
+                    "title": "Name queries threshold to prefetch",
+                    "type": "integer",
+                    "default": 5,
+                    "mimimum": 0
+                },
+                "prefetchMaxItemsCount": {
+                    "title": "Max number of domains to be kept in cache for prefetching (soft limit). ",
+                    "description": "Default (0): unlimited. Useful on systems with limited amount of RAM.",
+                    "$ref": "#/$defs/maxItemsConfig"
+                },
+                "cacheTimeNegative": {
+                    "title": "Negative results caching time",
+                    "description": "Time how long negative results (NXDOMAIN response or empty result) are cached. A value of -1 will disable caching for negative results.",
+                    "type": "string",
+                    "format": "duration",
+                    "default": "30m"
+                }
+            },
+            "additionalProperties": false,
+            "minProperties": 1
+        },
+        "redis": {
+            "title": "Blocky redis configuration",            
+            "description": "Blocky can synchronize its cache and blocking state between multiple instances through redis. Synchronization is disabled if no address is configured.",
+            "type": "object",
+            "properties": {
+                "address": {
+                    "title": "Server address and port",
+                    "description": "Or master name if sentinel is used",
+                    "type": "string"
+                },
+                "username": {
+                    "title": "Username if necessary",
+                    "type": "string"
+                },
+                "password": {
+                    "title": "Password if necessary",
+                    "type": "string"
+                },
+                "database": {
+                    "title": "redis database index",
+                    "type": "integer",
+                    "default": 0
+                },
+                "required": {
+                    "title": "Connection is required for blocky to start",
+                    "type": "boolean",
+                    "default": false
+                },
+                "connectionAttempts": {
+                    "title": "Maximum connection attempts",
+                    "type": "integer",
+                    "default": 3
+                },
+                "connectionCooldown": {
+                    "title": "Time between connection attempts",
+                    "type": "string",
+                    "format": "duration",
+                    "default": "1s"
+                },
+                "sentinelUsername": {
+                    "title": "Sentintel username if necessary",
+                    "type": "string"
+                },
+                "sentinelPassword": {
+                    "title": "Sentinel password if necessary",
+                    "type": "string"
+                },
+                "sentinelAddresses": {
+                    "title": "Sentinel host list",
+                    "description": "Sentinel is activated if addresses are defined",
+                    "type": "array",
+                    "items": {
+                        "title": "Sentinal address",
+                        "type": "string"
+                    },
+                    "minItems": 1
+                }
+            },
+            "additionalProperties": false,
+            "minProperties": 1
+        },
+        "prometheus": {
+            "title": "Blocky prometheus configuration",
+            "description": "Blocky can expose various metrics for prometheus. To use the prometheus feature, the HTTP listener must be enabled",
+            "type": "object",
+            "properties": {
+                "enable": {
+                    "title": "Enable prometheus metrics",
+                    "type": "boolean",
+                    "default": false
+                },
+                "path": {
+                    "title": "Metrics path",
+                    "description": "URL path to the metrics endpoint",
+                    "type": "string",
+                    "default": "/metrics"
+                }
+            },
+            "additionalProperties": false,
+            "minProperties": 1
+        },
+        "queryLog": {
+            "title": "Query logging",
+            "type": "object",
+            "properties": {
+                "type": {
+                    "title": "Query log type",
+                    "description": "Queries can be logged to one of the following destinations:\n\nmysql - log each query in the external MySQL/MariaDB database\npostgresql - log each query in the external PostgreSQL database\ncsv - log into CSV file (one per day)\ncsv-client - log into CSV file (one per day and per client)\nconsole - log into console output\nnone - do not log any queries",
+                    "type": "string",
+                    "enum": ["mysql", "postgresql", "csv", "csv-client", "console", "none"]
+                },
+                "target": {
+                    "title": "Query log target",
+                    "description": "for csv: directory for writing the logs\n\nfor mysql or postgresql: database url",
+                    "type": "string"
+                },
+                "logRetentionDays": {
+                    "title": "Days to retain logs",
+                    "description": "if > 0, deletes log files/database entries which are older than this number of days",
+                    "type": "integer",
+                    "default": 0,
+                    "minimum": 0
+                },
+                "logCreationAttempts": {
+                    "title": "Number of attempts to create log",
+                    "description": "Max attempts to create specific query log writer",
+                    "type": "integer",
+                    "default": 3,
+                    "minimum": 1
+                },
+                "creationCooldown": {
+                    "title": "Log creation cooldown",
+                    "description": "Time between creation attempts",
+                    "type": "string",
+                    "format": "duration",
+                    "default": "2s"
+                },
+                "fields": {
+                    "title": "Query log fields",
+                    "description": "You can choose which information from processed DNS request and response should be logged in the target system. You can define one or more of following fields:\n\nclientIP - origin IP address from the request\nclientName - resolved client name(s) from the origins request\nresponseReason - reason for the response (e.g. from which upstream resolver), response type and code\nresponseAnswer - returned DNS answer\nquestion - DNS question from the request\nduration - request processing time in milliseconds",
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["clientIP", "clientName", "responseReason", "responseAnswer", "question", "duration"]
+                    },
+                    "minItems": 1
+                },
+                "flushInterval": {
+                    "title": "Query log flush interval",
+                    "description": "Interval to write data in bulk to the external database",
+                    "type": "string",
+                    "format": "duration"
+                }
+            },
+            "additionalProperties": false,
+            "minProperties": 1
+        },
+        "hostsFile": {
+            "title": "Hosts file",
+            "description": "You can enable resolving of entries located in local hosts file",
+            "type": "object",
+            "properties": {
+                "sources": {
+                    "title": "Host files",
+                    "description": "path to host files (e.g. /etc/hosts)",
+                    "oneOf": [
+                        { "type": "string" },
+                        { 
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        }
+                    ]
+                },
+                "hostsTTL": {
+                    "title": "Hosts entries TTL",
+                    "type": "string",
+                    "format": "duration",
+                    "default": "1h"
+                },
+                "refreshPeriod": {
+                    "title": "Hosts refresh period",
+                    "description": "Time between hosts file refresh",
+                    "type": "string",
+                    "format": "duration",
+                    "default": "1h"
+                },
+                "filterLoopback": {
+                    "title": "Filter loopback addresses",
+                    "description": "Filter 127.0.0.0/8 and ::1 from being loaded",
+                    "type": "boolean",
+                    "default": false
+                },
+                "loading": {
+                    "$ref": "#/$defs/loadingConfig"
+                }
+            },
+            "additionalProperties": false,
+            "minProperties": 1
+        },
+        "ede": {
+            "title": "Deliver EDE codes as EDNS0 option",
+            "description": "DNS responses can be extended with EDE codes according to RFC8914",
+            "type": "object",
+            "properties": {
+                "enable": {
+                    "title": "Enable EDE",
+                    "description": "If true, DNS responses are delivered with EDE codes",
+                    "type": "boolean",
+                    "default": false
+                }
+            },
+            "additionalProperties": false,
+            "required": [
+                "enable"
+            ]
+        },
+        "ecs": {
+            "title": "EDNS Client Subnet options",
+            "type": "object",
+            "properties": {
+                "useAsClient": {
+                    "title": "Use ECS information",
+                    "description": "Use ECS information if it is present with a netmask is 32 for IPv4 or 128 for IPv6 as ClientIP",
+                    "type": "boolean",
+                    "default": false
+                },
+                "forward": {
+                    "title": "Forward ECS option to upstream",
+                    "type": "boolean",
+                    "default": false
+                },
+                "ipv4Mask": {
+                    "title": "ECS IPv4 mask",
+                    "description": "Add ECS option for IPv4 requests if mask is greater than zero (max value 32)",
+                    "type": "integer",
+                    "default": 0,
+                    "minimum": 0,
+                    "maximum": 32
+                },
+                "ipv6Mask": {
+                    "title": "ECS IPv4 mask",
+                    "description": "Add ECS option for IPv6 requests if mask is greater than zero (max value 128)",
+                    "type": "integer",
+                    "default": 0,
+                    "minimum": 0,
+                    "maximum": 128
+                }
+            },
+            "additionalProperties": false,
+            "minProperties": 1
+        },
+        "specialUseDomains": {
+            "title": "Special Use Domain Names",
+            "description": "SUDN (Special Use Domain Names) are always enabled as they are required by various RFCs",
+            "type": "object",
+            "properties": {
+                "rfc6762-appendixG": {
+                    "title": "Block TLDs listed in RFC6762 Appendix G",
+                    "type": "boolean",
+                    "default": false
+                }
+            },
+            "additionalProperties": false,
+            "required": [
+                "rfc6762-appendixG"
+            ]
+        }
+    },
+    "title": "BlockyConfig",
+    "type": "object"
+}
